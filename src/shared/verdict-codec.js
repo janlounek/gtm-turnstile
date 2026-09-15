@@ -211,6 +211,37 @@ var tsvBind = function (deps, salt, ip, userAgent) {
 };
 
 // ---------------------------------------------------------------------------
+// recovering Cloudflare's raw verdict
+// ---------------------------------------------------------------------------
+
+// Cloudflare's siteverify `success` flag, recovered from the reason codes.
+//
+// The raw boolean is not stored -- it does not need to be, because the reason codes
+// already distinguish every case, provided they stay split. `nt` (we never got an
+// answer) must stay separate from `ie` (Cloudflare answered and said no), and `nh` (the
+// browser sent no token) from `mr` (Cloudflare saw no token). Merge either pair and this
+// function silently starts lying. The producing side is tsvScore() in scoring.js.
+//
+// Returns true, false, or undefined -- undefined meaning siteverify was never
+// successfully consulted, which is NOT the same as a rejection.
+var TSV_CF_FALSE = ['mr', 'ie', 'cfg', 'fg', 'rp'];
+var TSV_CF_UNASKED = ['nh', 'sb', 'to', 'er', 'nt', 'bm', 'nk'];
+
+var tsvCfSuccess = function (reasons) {
+  if (!reasons) return undefined;
+  var i;
+  for (i = 0; i < reasons.length; i++) {
+    if (TSV_CF_FALSE.indexOf(reasons[i]) !== -1) return false;
+  }
+  for (i = 0; i < reasons.length; i++) {
+    if (TSV_CF_UNASKED.indexOf(reasons[i]) !== -1) return undefined;
+  }
+  // Everything that remains -- no reasons at all, or only st / am / hm -- describes a
+  // token Cloudflare accepted.
+  return true;
+};
+
+// ---------------------------------------------------------------------------
 // score bucket
 // ---------------------------------------------------------------------------
 
@@ -239,6 +270,7 @@ module.exports = {
   tsvDecode: tsvDecode,
   tsvIpPrefix: tsvIpPrefix,
   tsvBind: tsvBind,
+  tsvCfSuccess: tsvCfSuccess,
   tsvBucket: tsvBucket
 };
 // BUILD:STRIP-END

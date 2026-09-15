@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const scoring = require('../src/shared/scoring.js');
+const codec = require('../src/shared/verdict-codec.js');
 const { deps, NOW } = require('./helpers.js');
 
 const ALLOWED = ['shop.example.com', 'www.example.com'];
@@ -138,20 +139,25 @@ test('a Cloudflare internal error is an error verdict', () => {
   const r = run({ body: fail(['internal-error']) });
   assert.strictEqual(r.verdict, 'e');
   assert.strictEqual(r.score, null);
-  assert.deepStrictEqual(r.reasons, ['net']);
+  // `ie`, not `nt`: Cloudflare did answer. Keeping those apart is what lets
+  // tsvCfSuccess tell a rejection from a question we never managed to ask.
+  assert.deepStrictEqual(r.reasons, ['ie']);
 });
 
 test('an unrecognised error code degrades to error rather than to bot', () => {
   const r = run({ body: fail(['some-future-code']) });
   assert.strictEqual(r.verdict, 'e');
   assert.strictEqual(r.score, null);
+  assert.deepStrictEqual(r.reasons, ['ie']);
 });
 
 test('missing-input-response is unknown, not bot', () => {
   const r = run({ body: fail(['missing-input-response']) });
   assert.strictEqual(r.verdict, 'u');
   assert.strictEqual(r.score, null);
-  assert.deepStrictEqual(r.reasons, ['nh']);
+  // `mr` rather than `nh`: Cloudflare saw the request and found no token, which is a
+  // different fact from the browser never having sent one.
+  assert.deepStrictEqual(r.reasons, ['mr']);
 });
 
 // --- absence of signal ------------------------------------------------------
@@ -182,7 +188,7 @@ test('siteverify being unreachable is an error, not a judgement about the visito
     const r = run(input);
     assert.strictEqual(r.verdict, 'e');
     assert.strictEqual(r.score, null);
-    assert.deepStrictEqual(r.reasons, ['net']);
+    assert.deepStrictEqual(r.reasons, ['nt']);
   }
 });
 
@@ -235,4 +241,62 @@ test('tsvParseIso returns null on anything malformed rather than guessing', () =
   for (const s of bad) {
     assert.strictEqual(scoring.tsvParseIso(s, Number), null, String(s));
   }
+});
+
+// --- recovering Cloudflare's raw pass/fail ----------------------------------
+
+test('tsvCfSuccess recovers siteverify success for every rubric outcome', () => {
+  // The raw boolean is never stored; it is recovered from the reason codes. This test
+  // walks every branch of the rubric and checks the recovered value against what
+  // Cloudflare actually returned in that scenario, so the two stay in step.
+  const cases = [
+    // [scenario, what siteverify really returned]
+    [{ body: ok() }, true],
+    [{ body: ok({ challenge_ts: at(200) }) }, true],
+    [{ body: ok({ action: 'checkout' }) }, true],
+    [{ body: ok({ hostname: 'attacker.example.net' }) }, true],
+    [{ body: fail(['invalid-input-response']) }, false],
+    [{ body: fail(['timeout-or-duplicate']) }, false],
+    [{ body: fail(['invalid-input-secret']) }, false],
+    [{ body: fail(['missing-input-secret']) }, false],
+    [{ body: fail(['bad-request']) }, false],
+    [{ body: fail(['internal-error']) }, false],
+    [{ body: fail(['missing-input-response']) }, false],
+    [{ body: fail(['some-future-code']) }, false],
+    // Never asked: undefined, which must NOT read as a rejection.
+    [{ tokenPresent: false }, undefined],
+    [{ tokenPresent: false, clientReason: 'sb' }, undefined],
+    [{ tokenPresent: false, clientReason: 'to' }, undefined],
+    [{ tokenPresent: false, clientReason: 'er' }, undefined],
+    [{ transport: 'failed', body: null }, undefined]
+  ];
+
+  for (const [input, expected] of cases) {
+    const r = run(input);
+    assert.strictEqual(
+      codec.tsvCfSuccess(r.reasons),
+      expected,
+      `${JSON.stringify(input)} -> reasons ${JSON.stringify(r.reasons)}`
+    );
+  }
+});
+
+test('an unreachable siteverify is not reported as a Cloudflare rejection', () => {
+  // The distinction the split reason codes exist for. Both are verdict `error`, but
+  // only one of them means Cloudflare said no.
+  assert.strictEqual(codec.tsvCfSuccess(run({ transport: 'failed', body: null }).reasons), undefined);
+  assert.strictEqual(codec.tsvCfSuccess(run({ body: fail(['internal-error']) }).reasons), false);
+});
+
+test('a browser that sent no token is not reported as a Cloudflare rejection', () => {
+  assert.strictEqual(codec.tsvCfSuccess(run({ tokenPresent: false }).reasons), undefined);
+  assert.strictEqual(codec.tsvCfSuccess(run({ body: fail(['missing-input-response']) }).reasons), false);
+});
+
+test('a cookie the variable could not verify reports no Cloudflare result', () => {
+  // The variable's own failure codes must never be mistaken for a siteverify answer.
+  assert.strictEqual(codec.tsvCfSuccess(['bm']), undefined);
+  assert.strictEqual(codec.tsvCfSuccess(['nk']), undefined);
+  assert.strictEqual(codec.tsvCfSuccess([]), true);
+  assert.strictEqual(codec.tsvCfSuccess(null), undefined);
 });

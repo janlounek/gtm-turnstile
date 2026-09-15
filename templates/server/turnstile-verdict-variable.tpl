@@ -43,6 +43,10 @@ ___TEMPLATE_PARAMETERS___
         "displayValue": "Verdict (human / suspect / bot / unknown / error)"
       },
       {
+        "value": "cf_success",
+        "displayValue": "Cloudflare siteverify success (true / false / undefined)"
+      },
+      {
         "value": "score",
         "displayValue": "Score (0-100, or undefined)"
       },
@@ -375,6 +379,37 @@ var tsvBind = function (deps, salt, ip, userAgent) {
 };
 
 // ---------------------------------------------------------------------------
+// recovering Cloudflare's raw verdict
+// ---------------------------------------------------------------------------
+
+// Cloudflare's siteverify `success` flag, recovered from the reason codes.
+//
+// The raw boolean is not stored -- it does not need to be, because the reason codes
+// already distinguish every case, provided they stay split. `nt` (we never got an
+// answer) must stay separate from `ie` (Cloudflare answered and said no), and `nh` (the
+// browser sent no token) from `mr` (Cloudflare saw no token). Merge either pair and this
+// function silently starts lying. The producing side is tsvScore() in scoring.js.
+//
+// Returns true, false, or undefined -- undefined meaning siteverify was never
+// successfully consulted, which is NOT the same as a rejection.
+var TSV_CF_FALSE = ['mr', 'ie', 'cfg', 'fg', 'rp'];
+var TSV_CF_UNASKED = ['nh', 'sb', 'to', 'er', 'nt', 'bm', 'nk'];
+
+var tsvCfSuccess = function (reasons) {
+  if (!reasons) return undefined;
+  var i;
+  for (i = 0; i < reasons.length; i++) {
+    if (TSV_CF_FALSE.indexOf(reasons[i]) !== -1) return false;
+  }
+  for (i = 0; i < reasons.length; i++) {
+    if (TSV_CF_UNASKED.indexOf(reasons[i]) !== -1) return undefined;
+  }
+  // Everything that remains -- no reasons at all, or only st / am / hm -- describes a
+  // token Cloudflare accepted.
+  return true;
+};
+
+// ---------------------------------------------------------------------------
 // score bucket
 // ---------------------------------------------------------------------------
 
@@ -434,6 +469,7 @@ if (data.keys) {
 const absent = function (reason) {
   return {
     tsv_verdict: 'unknown',
+    tsv_cf_success: undefined,
     tsv_score: undefined,
     tsv_score_bucket: 'none',
     tsv_reasons: reason,
@@ -446,7 +482,7 @@ const absent = function (reason) {
 const build = function () {
   if (keys.length === 0) {
     log('no signing keys configured');
-    return absent('cfg');
+    return absent('nk');
   }
 
   // noDecode: the client wrote the cookie unencoded, and re-encoding would change the
@@ -472,6 +508,9 @@ const build = function () {
 
   return {
     tsv_verdict: VERDICT_NAMES[decoded.verdict] ? VERDICT_NAMES[decoded.verdict] : 'unknown',
+    // Cloudflare's own pass/fail, recovered from the reason codes. undefined means
+    // siteverify was never consulted -- distinct from a rejection.
+    tsv_cf_success: tsvCfSuccess(decoded.reasons),
     tsv_score: decoded.score === null ? undefined : decoded.score,
     tsv_score_bucket: tsvBucket(decoded.score),
     tsv_reasons: decoded.reasons.length === 0 ? '' : decoded.reasons.join('-'),
@@ -484,6 +523,7 @@ const build = function () {
 const result = build();
 
 if (data.output === 'verdict') return result.tsv_verdict;
+if (data.output === 'cf_success') return result.tsv_cf_success;
 if (data.output === 'score') return result.tsv_score;
 if (data.output === 'bucket') return result.tsv_score_bucket;
 if (data.output === 'reasons') return result.tsv_reasons;
@@ -653,6 +693,30 @@ scenarios:
     assertThat(r.tsv_score).isUndefined();
     assertThat(r.tsv_score_bucket).isEqualTo('none');
     assertThat(r.tsv_reasons).isEqualTo('sb');
+- name: Cloudflare's own pass/fail is recoverable on every hit
+  code: |-
+    setCookie(signed('h', '95', NOW, NOW + 1800, BIND, '0'));
+    assertThat(runCode(mockData).tsv_cf_success, 'solved').isTrue();
+
+    setCookie(signed('b', '25', NOW, NOW + 1800, BIND, 'hm'));
+    assertThat(runCode(mockData).tsv_cf_success, 'off-site token still verified').isTrue();
+
+    setCookie(signed('b', '10', NOW, NOW + 1800, BIND, 'fg'));
+    assertThat(runCode(mockData).tsv_cf_success, 'forged token').isFalse();
+
+    setCookie(signed('e', 'na', NOW, NOW + 1800, BIND, 'ie'));
+    assertThat(runCode(mockData).tsv_cf_success, 'Cloudflare answered no').isFalse();
+
+    // The distinction the split reason codes exist for: never asked is not a rejection.
+    setCookie(signed('e', 'na', NOW, NOW + 1800, BIND, 'nt'));
+    assertThat(runCode(mockData).tsv_cf_success, 'siteverify unreachable').isUndefined();
+
+    setCookie(signed('u', 'na', NOW, NOW + 1800, BIND, 'sb'));
+    assertThat(runCode(mockData).tsv_cf_success, 'challenge blocked').isUndefined();
+
+    mockData.output = 'cf_success';
+    setCookie(signed('h', '95', NOW, NOW + 1800, BIND, '0'));
+    assertThat(runCode(mockData)).isTrue();
 - name: No cookie at all is unknown, not bot
   code: |-
     mock('getCookieValues', () => []);
@@ -663,6 +727,7 @@ scenarios:
     assertThat(r.tsv_source).isEqualTo('none');
     assertThat(r.tsv_reasons).isEqualTo('nh');
     assertThat(r.tsv_score).isUndefined();
+    assertThat(r.tsv_cf_success, 'no cookie is not a rejection').isUndefined();
 - name: A tampered verdict is refused
   code: |-
     const good = signed('b', '10', NOW, NOW + 1800, BIND, 'fg');
@@ -769,9 +834,10 @@ visitor reads back as `unknown`.
 
 FIELDS (with Output set to "All fields")
   tsv_verdict       human | suspect | bot | unknown | error
+  tsv_cf_success    Cloudflare's raw siteverify success: true | false | undefined
   tsv_score         0-100, or undefined
   tsv_score_bucket  0-19 | 20-39 | 40-59 | 60-79 | 80-100 | none
-  tsv_reasons       '-'-joined codes: am hm st rp fg nh sb to er cfg net bm
+  tsv_reasons       '-'-joined codes: am hm st rp fg mr nh sb to er cfg ie nt bm nk
   tsv_source        cookie | none
   tsv_age_s         seconds since the verdict was issued
   tsv_v             template version
@@ -782,6 +848,11 @@ browser with no JavaScript, a rotated key, or a bot that simply skipped the veri
 hit. `error` means this setup is broken (wrong secret, Cloudflare unreachable) and is
 worth alerting on. Neither carries a score, which is why tsv_score is undefined rather
 than 0 for both.
+
+tsv_cf_success is Cloudflare's own pass/fail, recovered from the reason codes. Note its
+third state: `undefined` means siteverify was never successfully consulted, which is NOT
+the same as Cloudflare rejecting the token. Treating the two alike is the mistake this
+field exists to prevent.
 
 The analytically interesting number is usually not the per-visitor label but the RATE of
 each verdict per traffic source. A referrer whose `unknown` rate is 90% when the site

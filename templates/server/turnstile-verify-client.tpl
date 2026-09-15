@@ -562,6 +562,37 @@ var tsvBind = function (deps, salt, ip, userAgent) {
 };
 
 // ---------------------------------------------------------------------------
+// recovering Cloudflare's raw verdict
+// ---------------------------------------------------------------------------
+
+// Cloudflare's siteverify `success` flag, recovered from the reason codes.
+//
+// The raw boolean is not stored -- it does not need to be, because the reason codes
+// already distinguish every case, provided they stay split. `nt` (we never got an
+// answer) must stay separate from `ie` (Cloudflare answered and said no), and `nh` (the
+// browser sent no token) from `mr` (Cloudflare saw no token). Merge either pair and this
+// function silently starts lying. The producing side is tsvScore() in scoring.js.
+//
+// Returns true, false, or undefined -- undefined meaning siteverify was never
+// successfully consulted, which is NOT the same as a rejection.
+var TSV_CF_FALSE = ['mr', 'ie', 'cfg', 'fg', 'rp'];
+var TSV_CF_UNASKED = ['nh', 'sb', 'to', 'er', 'nt', 'bm', 'nk'];
+
+var tsvCfSuccess = function (reasons) {
+  if (!reasons) return undefined;
+  var i;
+  for (i = 0; i < reasons.length; i++) {
+    if (TSV_CF_FALSE.indexOf(reasons[i]) !== -1) return false;
+  }
+  for (i = 0; i < reasons.length; i++) {
+    if (TSV_CF_UNASKED.indexOf(reasons[i]) !== -1) return undefined;
+  }
+  // Everything that remains -- no reasons at all, or only st / am / hm -- describes a
+  // token Cloudflare accepted.
+  return true;
+};
+
+// ---------------------------------------------------------------------------
 // score bucket
 // ---------------------------------------------------------------------------
 
@@ -603,11 +634,22 @@ var TSV_VERDICT_BOT = 'b';
 var TSV_VERDICT_UNKNOWN = 'u';
 var TSV_VERDICT_ERROR = 'e';
 
-// Reason codes, kept to two characters so a handful of them still fit a cookie segment.
-//   am action mismatch      hm hostname not allowed   st stale challenge
-//   rp replay (token reused) fg forged/invalid token  nh no token sent
-//   sb challenge script blocked  to challenge timed out  er client-side error
-//   cfg server misconfiguration  net siteverify unreachable  bm cookie bind mismatch
+// Reason codes, kept short so a handful of them still fit one cookie segment.
+//
+//   am  action mismatch            hm  hostname not allowed
+//   st  stale challenge            rp  replay (token reused)
+//   fg  forged / invalid token     mr  Cloudflare saw no token in the request
+//   nh  the browser sent no token  sb  challenge script blocked
+//   to  challenge timed out        er  client-side Turnstile error
+//   cfg our Turnstile config is wrong (bad secret / bad request)
+//   ie  Cloudflare returned internal-error
+//   nt  siteverify unreachable -- we never got an answer
+//   bm  verdict cookie failed verification (added by the variable, not here)
+//
+// `nt` vs `ie` and `nh` vs `mr` are split deliberately: collapsing each pair would make
+// it impossible to tell "Cloudflare rejected this" from "we never managed to ask".
+// tsvCfSuccess() in verdict-codec.js reads these codes to recover the raw siteverify
+// `success` value, so the two lists must stay in step.
 
 // Days-from-civil (Howard Hinnant's algorithm). The sandbox has no Date, so parsing
 // Turnstile's `challenge_ts` into unix seconds has to be done by hand. Integer division
@@ -687,7 +729,7 @@ var tsvScore = function (deps, input) {
   // siteverify unreachable or timed out: our problem, not the visitor's.
   if (input.transport !== 'ok' || !input.body) {
     out.verdict = TSV_VERDICT_ERROR;
-    reasons.push('net');
+    reasons.push('nt');
     return out;
   }
 
@@ -708,7 +750,7 @@ var tsvScore = function (deps, input) {
     }
     if (tsvHasCode(codes, 'internal-error')) {
       out.verdict = TSV_VERDICT_ERROR;
-      reasons.push('net');
+      reasons.push('ie');
       return out;
     }
     // Token reused or older than 300s. Suspect rather than bot: a double-fired tag or a
@@ -727,11 +769,12 @@ var tsvScore = function (deps, input) {
       return out;
     }
     if (tsvHasCode(codes, 'missing-input-response')) {
-      reasons.push('nh');
+      reasons.push('mr');
       return out;
     }
+    // An error code we do not recognise. Cloudflare did answer, and did say no.
     out.verdict = TSV_VERDICT_ERROR;
-    reasons.push('net');
+    reasons.push('ie');
     return out;
   }
 
@@ -872,6 +915,7 @@ const idempotencyKey = function (token) {
 // --------------------------------------------------------------------------
 
 const respond = function (result, jti) {
+  const cfSuccess = tsvCfSuccess(result.reasons);
   const cookieTtl = makeInteger(makeNumber(data.cookieTtl));
   const exp = nowSec + cookieTtl;
 
@@ -921,6 +965,9 @@ const respond = function (result, jti) {
     setResponseHeader('content-type', 'application/json');
     setResponseBody(JSON.stringify({
       verdict: result.verdict,
+      // Explicit null rather than undefined: JSON.stringify drops undefined keys, and a
+      // debug endpoint that silently omits a field is worse than useless.
+      cf_success: cfSuccess === undefined ? null : cfSuccess,
       score: result.score,
       bucket: tsvBucket(result.score),
       reasons: result.reasons,
@@ -940,6 +987,7 @@ const respond = function (result, jti) {
     runContainer({
       event_name: data.eventName,
       tsv_verdict: result.verdict,
+      tsv_cf_success: cfSuccess,
       tsv_score: result.score,
       tsv_reasons: result.reasons.join('-'),
       tsv_hostname: result.hostname,
@@ -1436,7 +1484,7 @@ scenarios:
       const parts = cookies._tsv.split('.');
       assertThat(parts[2], 'verdict').isEqualTo('e');
       assertThat(parts[3]).isEqualTo('na');
-      assertThat(parts[7], 'reasons').isEqualTo('net');
+      assertThat(parts[7], 'reasons').isEqualTo('nt');
     });
 - name: A client-supplied reason code that is not ours is discarded
   code: |-

@@ -23,11 +23,22 @@ var TSV_VERDICT_BOT = 'b';
 var TSV_VERDICT_UNKNOWN = 'u';
 var TSV_VERDICT_ERROR = 'e';
 
-// Reason codes, kept to two characters so a handful of them still fit a cookie segment.
-//   am action mismatch      hm hostname not allowed   st stale challenge
-//   rp replay (token reused) fg forged/invalid token  nh no token sent
-//   sb challenge script blocked  to challenge timed out  er client-side error
-//   cfg server misconfiguration  net siteverify unreachable  bm cookie bind mismatch
+// Reason codes, kept short so a handful of them still fit one cookie segment.
+//
+//   am  action mismatch            hm  hostname not allowed
+//   st  stale challenge            rp  replay (token reused)
+//   fg  forged / invalid token     mr  Cloudflare saw no token in the request
+//   nh  the browser sent no token  sb  challenge script blocked
+//   to  challenge timed out        er  client-side Turnstile error
+//   cfg our Turnstile config is wrong (bad secret / bad request)
+//   ie  Cloudflare returned internal-error
+//   nt  siteverify unreachable -- we never got an answer
+//   bm  verdict cookie failed verification (added by the variable, not here)
+//
+// `nt` vs `ie` and `nh` vs `mr` are split deliberately: collapsing each pair would make
+// it impossible to tell "Cloudflare rejected this" from "we never managed to ask".
+// tsvCfSuccess() in verdict-codec.js reads these codes to recover the raw siteverify
+// `success` value, so the two lists must stay in step.
 
 // Days-from-civil (Howard Hinnant's algorithm). The sandbox has no Date, so parsing
 // Turnstile's `challenge_ts` into unix seconds has to be done by hand. Integer division
@@ -107,7 +118,7 @@ var tsvScore = function (deps, input) {
   // siteverify unreachable or timed out: our problem, not the visitor's.
   if (input.transport !== 'ok' || !input.body) {
     out.verdict = TSV_VERDICT_ERROR;
-    reasons.push('net');
+    reasons.push('nt');
     return out;
   }
 
@@ -128,7 +139,7 @@ var tsvScore = function (deps, input) {
     }
     if (tsvHasCode(codes, 'internal-error')) {
       out.verdict = TSV_VERDICT_ERROR;
-      reasons.push('net');
+      reasons.push('ie');
       return out;
     }
     // Token reused or older than 300s. Suspect rather than bot: a double-fired tag or a
@@ -147,11 +158,12 @@ var tsvScore = function (deps, input) {
       return out;
     }
     if (tsvHasCode(codes, 'missing-input-response')) {
-      reasons.push('nh');
+      reasons.push('mr');
       return out;
     }
+    // An error code we do not recognise. Cloudflare did answer, and did say no.
     out.verdict = TSV_VERDICT_ERROR;
-    reasons.push('net');
+    reasons.push('ie');
     return out;
   }
 

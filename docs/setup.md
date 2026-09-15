@@ -155,7 +155,8 @@ Finally, prove the negative cases:
 ```bash
 # No token at all -> unknown with a reason, not a low score
 curl -s -X POST https://sgtm.example.com/tsv --data 'v=1&t=none&a=page_view&r=sb'
-# => {"verdict":"u","score":null,"reasons":["sb"], ...}
+# => {"verdict":"u","cf_success":null,"score":null,"reasons":["sb"], ...}
+#    cf_success is null, not false: we never asked Cloudflare anything.
 ```
 
 Take a real token from the browser's network tab and replay it twice: the first call
@@ -181,6 +182,8 @@ Doing it in that order means no visitor ever presents a cookie the variable cann
 | Everyone is `error`, `tsv_reasons: cfg` | Wrong Turnstile secret key. Worth an alert: at this point 100% of traffic scores identically and the data is worthless |
 | Lots of `suspect` / `rp` | Tokens being replayed — usually a tag firing more than once per page, a bfcache restore, or prerendering |
 | Lots of `unknown` / `sb` | `challenges.cloudflare.com` blocked, by an ad blocker or by your own CSP |
+| Lots of `error` / `nt` | Your container cannot reach `challenges.cloudflare.com` — egress or timeout. Cloudflare never answered, so these are not rejections |
+| Lots of `error` / `ie` | Cloudflare answered with `internal-error`. Their side, not yours |
 | Lots of `suspect` / `am` | The web tag's *Action* and the client's *Expected action* do not match |
 | Everything is `bot` / `hm` | The hostname Turnstile reports is not in the allowed list — check for `www` versus apex |
 | The tag reports failure in preview | The *Injects Scripts* permission was never narrowed to your endpoint, or was narrowed wrongly |

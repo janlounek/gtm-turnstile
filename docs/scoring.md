@@ -33,16 +33,34 @@ score is the mistake that turns this into a machine for mislabelling real people
 | Solved, hostname allowed, action does not match | 60 | `suspect` | `am` |
 | `invalid-input-response` — the token is forged or corrupt | 10 | `bot` | `fg` |
 | `timeout-or-duplicate` — the token was already spent | 30 | `suspect` | `rp` |
-| No token sent, or `missing-input-response` | — | `unknown` | `nh` |
+| `missing-input-response` — Cloudflare saw no token | — | `unknown` | `mr` |
+| The browser sent no token at all | — | `unknown` | `nh` |
 | Browser reported the challenge script was blocked | — | `unknown` | `sb` |
 | Browser reported the challenge timed out | — | `unknown` | `to` |
 | Browser reported a Turnstile error | — | `unknown` | `er` |
 | `missing-input-secret`, `invalid-input-secret`, `bad-request` | — | `error` | `cfg` |
-| `internal-error`, or siteverify unreachable | — | `error` | `net` |
+| `internal-error`, or an unrecognised error code | — | `error` | `ie` |
+| siteverify unreachable — no answer at all | — | `error` | `nt` |
 | Verdict cookie fails signature, binding or format checks | — | `unknown` | `bm` |
+| The variable has no signing keys configured | — | `unknown` | `nk` |
 
 Hostname is checked **before** action, so a token minted on an attacker's page can never
 downgrade to merely `suspect`.
+
+### Why some pairs of codes look redundant
+
+`nt` and `ie` are both verdict `error`; `nh` and `mr` are both `unknown`. They are kept
+apart on purpose, because only one of each pair means *Cloudflare rejected this*:
+
+| | Cloudflare answered | What it said |
+|---|---|---|
+| `ie` | yes | `internal-error` — rejected |
+| `nt` | **no** | we never got a response |
+| `mr` | yes | `missing-input-response` — rejected |
+| `nh` | **no** | the browser sent nothing, so we never asked |
+
+Merge either pair and `tsv_cf_success` below silently starts reporting "Cloudflare said
+no" for requests Cloudflare never saw.
 
 ### Why `timeout-or-duplicate` is only `suspect`
 
@@ -64,6 +82,7 @@ With **Output: All fields**, the variable returns:
 | Field | Type | Notes |
 |---|---|---|
 | `tsv_verdict` | string | `human` / `suspect` / `bot` / `unknown` / `error` |
+| `tsv_cf_success` | boolean \| undefined | Cloudflare's own `success` flag — see below |
 | `tsv_score` | number \| undefined | 0–100; undefined for `unknown` and `error` |
 | `tsv_score_bucket` | string | `0-19` … `80-100`, or `none`. **Send this to GA4.** |
 | `tsv_reasons` | string | `-`-joined codes from the table above |
@@ -73,6 +92,34 @@ With **Output: All fields**, the variable returns:
 
 Send `tsv_score_bucket` to GA4 rather than `tsv_score`: a 0–100 integer as a custom
 dimension is 101 distinct values for no analytical gain. Keep the raw score for BigQuery.
+
+### `tsv_cf_success` — the raw Cloudflare verdict
+
+Turnstile's `siteverify` returns a plain `success` boolean, and everything above is a
+layer of interpretation on top of it. When you want the unprocessed answer — for
+auditing, for a BigQuery column, or because you disagree with the rubric —
+`tsv_cf_success` gives it to you on **every hit**, not just the verification one.
+
+It is a **tri-state**, and the third state is the point:
+
+| Value | Meaning |
+|---|---|
+| `true` | Cloudflare verified the token. Includes `hm` and `am`: the token was genuine, we just did not like where it came from. |
+| `false` | Cloudflare rejected it — forged, replayed, or our own configuration is wrong. |
+| `undefined` | siteverify was never successfully consulted. No token was sent, the challenge was blocked, or Cloudflare was unreachable. |
+
+`undefined` is **not** a rejection. Any report that filters on `tsv_cf_success = false`
+is asking "who did Cloudflare turn away", and will correctly exclude the ad-blocker
+population; a report that filters on `!= true` is asking a different question and will
+sweep them in.
+
+Note the asymmetry with `tsv_verdict`: a token from an attacker's page is
+`tsv_verdict: bot` but `tsv_cf_success: true`. Both are correct — Cloudflare's job was to
+confirm a human solved a challenge, and one did. Deciding that it happened on the wrong
+site is ours.
+
+The value is not stored in the cookie; it is recomputed from the reason codes each time,
+which is why the `nt`/`ie` and `nh`/`mr` splits above have to hold.
 
 ## Reading the data
 
