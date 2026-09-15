@@ -1,0 +1,15 @@
+{
+  "name": "gtm-turnstile",
+  "version": "0.1.0",
+  "description": "Cloudflare Turnstile bot-score templates for web and server-side Google Tag Manager",
+  "license": "MIT",
+  "private": false,
+  "scripts": {
+    "build": "node build/generate-tpl.js",
+    "check": "node build/check-tpl.js",
+    "test": "node --test",
+    "verify": "npm run check && npm test"
+  },
+  "keywords": ["google-tag-manager", "gtm", "server-side-tagging", "cloudflare-turnstile", "bot-detection"],
+  "engines": { "node": ">=20" }
+}
