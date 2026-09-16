@@ -5,6 +5,12 @@ server client is publishing the bootstrap script.
 
 ## 0. Before you start
 
+**If you are on Windows PowerShell**, write `curl.exe` rather than `curl` in every
+command below. Bare `curl` is an alias for `Invoke-WebRequest`, which does not understand
+curl's flags and fails with *"A parameter cannot be found that matches parameter name
+'sI'"*. Real curl ships with Windows at `C:\Windows\System32\curl.exe`. Native
+PowerShell equivalents are given alongside each command.
+
 Check one thing first, because it decides whether any of this can work:
 
 > Is your server-side GTM container on the **same registrable domain** as the website?
@@ -63,6 +69,15 @@ Generate the two secrets with something like:
 
 ```bash
 openssl rand -hex 32
+```
+
+PowerShell has no `openssl`, and `Get-Random` is not cryptographically secure — use the
+platform RNG instead:
+
+```powershell
+$b = [byte[]]::new(32)
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+-join ($b | ForEach-Object { $_.ToString('x2') })
 ```
 
 **The allowed hostnames list is the check that matters.** The site key is public, so an
@@ -129,7 +144,14 @@ Confirm the bootstrap is being served:
 curl -sI https://sgtm.example.com/tsv.js
 ```
 
-Expect `200` and `content-type: text/javascript`.
+```powershell
+$r = Invoke-WebRequest -Method Head -Uri https://sgtm.example.com/tsv.js
+$r.StatusCode
+$r.Headers['Content-Type']
+```
+
+Expect `200` and `content-type: text/javascript`. In PowerShell a 404 surfaces as a
+terminating error rather than a printed status.
 
 Turn on **Return the verdict as JSON** in the client temporarily, then load the site with
 the browser console open. You should see:
@@ -158,6 +180,13 @@ curl -s -X POST https://sgtm.example.com/tsv --data 'v=1&t=none&a=page_view&r=sb
 # => {"verdict":"u","cf_success":null,"score":null,"reasons":["sb"], ...}
 #    cf_success is null, not false: we never asked Cloudflare anything.
 ```
+
+```powershell
+Invoke-RestMethod -Method Post -Uri https://sgtm.example.com/tsv `
+  -ContentType 'text/plain' -Body 'v=1&t=none&a=page_view&r=sb'
+```
+
+Single-quote the body: PowerShell treats an unquoted `&` as a command separator.
 
 Take a real token from the browser's network tab and replay it twice: the first call
 should return `h`, the second `s` with `["rp"]` — that is Turnstile's single-use
