@@ -141,17 +141,34 @@ values of cardinality for no analytical gain. Keep the raw score for BigQuery.
 Confirm the bootstrap is being served:
 
 ```bash
-curl -sI https://sgtm.example.com/tsv.js
+curl -s -o /dev/null -w '%{http_code} %{content_type}
+' https://sgtm.example.com/tsv.js
 ```
 
 ```powershell
-$r = Invoke-WebRequest -Method Head -Uri https://sgtm.example.com/tsv.js
+$r = Invoke-WebRequest -Uri https://sgtm.example.com/tsv.js
 $r.StatusCode
 $r.Headers['Content-Type']
 ```
 
-Expect `200` and `content-type: text/javascript`. In PowerShell a 404 surfaces as a
-terminating error rather than a printed status.
+Expect `200` and `text/javascript`. In PowerShell a 404 surfaces as a terminating error
+rather than a printed status.
+
+Then confirm the container is serving the version you think it is. A cache-buster is the
+point: it distinguishes "not published yet" from "cached in front of the container".
+
+```bash
+curl -s "https://sgtm.example.com/tsv.js?cb=$RANDOM" | grep -c 'onload=__tsvReady'
+```
+
+```powershell
+(Invoke-WebRequest -Uri "https://sgtm.example.com/tsv.js?cb=$(Get-Random)").Content `
+  -match 'onload=__tsvReady'
+```
+
+`1` / `True` means the current bootstrap is live. `0` / `False` after a cache-buster means
+the container was never republished — republishing is a separate step from importing the
+template, and importing alone changes nothing a browser can see.
 
 Turn on **Return the verdict as JSON** in the client temporarily, then load the site with
 the browser console open. You should see:

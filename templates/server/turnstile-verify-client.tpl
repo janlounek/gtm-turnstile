@@ -1077,12 +1077,14 @@ const verify = function () {
 
 // Claim conservatively: exact path, known method. Anything else falls through so this
 // client can never shadow the GA4 client or a health check.
-if (data.serveBootstrap && path === scriptPath && method === 'GET') {
+if (data.serveBootstrap && path === scriptPath && (method === 'GET' || method === 'HEAD')) {
   claimRequest();
   setResponseStatus(200);
   setResponseHeader('content-type', 'text/javascript; charset=utf-8');
   setResponseHeader('cache-control', 'public, max-age=' + makeString(makeInteger(makeNumber(data.bootstrapCacheSeconds))));
-  setResponseBody(TSV_BOOTSTRAP);
+  // HEAD answers with the same status and headers and no body, so `curl -I` reports
+  // the truth instead of a 404 that looks like a broken deployment.
+  if (method === 'GET') setResponseBody(TSV_BOOTSTRAP);
   returnResponse();
 } else if (path === verifyPath && (method === 'POST' || method === 'GET')) {
   claimRequest();
@@ -1511,6 +1513,17 @@ scenarios:
     assertApi('setResponseStatus').wasCalledWith(200);
     assertThat(responseBody, 'bootstrap body').contains('challenges.cloudflare.com');
     assertThat(responseHeaders['content-type']).contains('text/javascript');
+- name: A HEAD request for the bootstrap answers 200 with no body
+  code: |-
+    mock('getRequestPath', '/tsv.js');
+    mock('getRequestMethod', 'HEAD');
+
+    runCode(mockData);
+
+    assertApi('claimRequest').wasCalled();
+    assertApi('setResponseStatus').wasCalledWith(200);
+    assertThat(responseHeaders['content-type']).contains('text/javascript');
+    assertThat(responseBody, 'HEAD must not carry a body').isEqualTo('');
 - name: Unrelated paths are not claimed
   code: |-
     mock('getRequestPath', '/g/collect');
