@@ -234,6 +234,19 @@ test('the browser bootstrap parses', () => {
   const src = fs.readFileSync(path.join(ROOT, 'src/bootstrap/tsv.js'), 'utf8');
   assert.doesNotThrow(() => new Function(src), 'syntax error in the bootstrap');
   assert.ok(src.includes('sendBeacon'), 'bootstrap must have a transport');
+
+  // Turnstile throws "Remove async/defer from the Turnstile api.js script tag before
+  // using turnstile.ready()" at runtime. The script is injected, so it necessarily
+  // carries async/defer; the onload query parameter is the supported hook instead.
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(
+    !/turnstile\.ready\s*\(/.test(code),
+    'bootstrap must not call turnstile.ready() - it throws on an async/defer script tag'
+  );
+  assert.ok(src.includes('onload=__tsvReady'), 'api.js must use the onload query parameter');
+  assert.ok(/W\[READY\]\s*=/.test(src), 'the onload callback must be defined before the script loads');
   assert.ok(src.includes('prerendering'), 'bootstrap must guard against prerender');
   // Sending the hit even without a token is what makes "no signal" measurable.
   assert.ok(/send\(''\s*,\s*'sb'\)/.test(src), 'bootstrap must report a blocked script');

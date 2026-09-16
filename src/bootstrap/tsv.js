@@ -19,7 +19,8 @@
 
   var W = window;
   var D = document;
-  var API = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+  var API = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=__tsvReady';
+  var READY = '__tsvReady';
   var STATE = '__tsvState';
 
   if (W[STATE]) return; // already bootstrapped on this page
@@ -143,17 +144,26 @@
   }
 
   function loadApi() {
+    /* Already on the page, loaded by something else. render() being a function means
+     * the API is initialised, so there is nothing to wait for. */
     if (W.turnstile && typeof W.turnstile.render === 'function') {
-      W.turnstile.ready(challenge);
+      challenge();
       return;
     }
+
+    /* The onload query parameter is Turnstile's documented hook for asynchronous
+     * loading, and the only correct one here: turnstile.ready() throws outright
+     * ("Remove async/defer from the Turnstile api.js script tag before using
+     * turnstile.ready()") when the script tag carries async or defer, which this one
+     * must, since it is injected. */
+    W[READY] = function () {
+      challenge();
+    };
+
     var s = D.createElement('script');
     s.src = API;
     s.async = true;
     s.defer = true;
-    s.onload = function () {
-      W.turnstile.ready(challenge);
-    };
     /* Blocked by an ad blocker, a CSP that omits challenges.cloudflare.com, or a
      * network failure. Reported as its own reason code so the resulting `unknown`
      * is attributable rather than mysterious. */
