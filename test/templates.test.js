@@ -143,6 +143,25 @@ for (const [file, spec] of Object.entries(TEMPLATES)) {
     assert.ok(tests.includes('runCode(mockData)'), 'no scenario actually runs the code');
     assert.ok(/^- name: /m.test(tests), 'no named scenarios');
   });
+
+  // GTM rejects the whole import over a single bad character in a scenario name, with
+  // an error that names the character but not the file. A '.' is confirmed invalid;
+  // shipped gallery templates use commas, brackets, parentheses and hyphens freely and
+  // never use '. / or :, so that is the set treated as safe here.
+  test(`${file}: every ___TESTS___ scenario name imports cleanly`, () => {
+    const names = [...sections(file)['___TESTS___'].matchAll(/^- name: (.+)$/gm)]
+      .map((m) => m[1].trim());
+    assert.ok(names.length > 0, 'no scenario names found');
+    for (const name of names) {
+      const bad = [...name].filter((c) => !/[A-Za-z0-9 ,()[\]=_-]/.test(c));
+      assert.deepStrictEqual(
+        bad,
+        [],
+        `scenario name contains character(s) GTM rejects on import: ${JSON.stringify(bad.join(''))}
+    in: ${name}`
+      );
+    }
+  });
 }
 
 // --- cross-template invariants ---------------------------------------------

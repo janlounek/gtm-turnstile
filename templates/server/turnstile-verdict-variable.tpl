@@ -693,7 +693,7 @@ scenarios:
     assertThat(r.tsv_score).isUndefined();
     assertThat(r.tsv_score_bucket).isEqualTo('none');
     assertThat(r.tsv_reasons).isEqualTo('sb');
-- name: Cloudflare's own pass/fail is recoverable on every hit
+- name: The raw Cloudflare verdict is recoverable on every hit
   code: |-
     setCookie(signed('h', '95', NOW, NOW + 1800, BIND, '0'));
     assertThat(runCode(mockData).tsv_cf_success, 'solved').isTrue();

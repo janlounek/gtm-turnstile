@@ -1500,7 +1500,7 @@ scenarios:
       assertThat(parts[2]).isEqualTo('u');
       assertThat(parts[7], 'reasons').isEqualTo('nh');
     });
-- name: The bootstrap script is served on the .js path
+- name: Serves the bootstrap script on its own path
   code: |-
     mock('getRequestPath', '/tsv.js');
     mock('getRequestMethod', 'GET');
